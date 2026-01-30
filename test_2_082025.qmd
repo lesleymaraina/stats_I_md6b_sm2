@@ -1,0 +1,567 @@
+---
+title: "Practical Regression Implementations: linear regression and logistic regression"
+author: "<br><br><span style='font-size:25px;'><strong>Lesley Chapman Hannah, Ph.D., M.S.</strong></span><br>College of Graduate Studies<br>Northeast Ohio Medical University"
+format:
+  revealjs:
+    theme: simple
+    slide-number: true
+    chalkboard: true
+    #incremental: true
+    code-fold: false
+execute:
+  echo: true
+  warning: false
+  message: false
+  error: true
+
+---
+
+```{r}
+#| include: false
+
+library(tidyverse)  
+library(survival)    
+library(nlme)        
+library(ggplot2)
+
+set.seed(29)
+theme_set(theme_bw())
+```
+
+
+
+## Overview
+<div style="font-size:0.8em">
+In the next series of lectures, each regression model will be used to model a specific kind of biomedical outcome
+
+- **Linear regression** models a continuous outcome  
+  Example outcomes: gene expression (normalized), lab values (e.g., CRP), tumor size/volume, biomarker concentrations
+
+- **Logistic regression** models a binary outcome  
+  Example outcomes: responder vs non-responder, adverse event yes/no, mutation present vs absent, relapse yes/no
+
+</div>
+---
+
+## Overview
+<div style="font-size:0.8em">
+
+For each model implementation, we will:
+
+- describe the model formula 
+- state the likelihood
+- fit the model using R
+- interpret model output; i.e.: coefficients and uncertainty 
+
+</div>
+---
+
+
+
+## Linear Regression - Reseach Question(s)
+
+Does a drug lower systolic blood pressure (SBP) after adjusting for age?
+
+---
+
+## Linear regression model statement
+<div style="font-size:0.8em">
+$$
+Y_i = \beta_0 + \beta_1 \text{Drug}_i + \beta_2 \text{Age}_i + \varepsilon_i,
+\quad \varepsilon_i \sim N(0,\sigma^2)
+$$
+
+Key parts:
+
+- $\beta_0$: expected SBP for a reference patient (control group, age = 0 baseline)
+- $\beta_x$: regression coefficients
+  - adjusted mean SBP difference (Drug vs Control), in mmHg
+- $\sigma^2$: error variance
+  - remaining variability not explained by treatment or age
+  - residual biological + measurement variability
+  - how spread out individual SBP values are around the regression line
+</div>
+---
+
+## Likelihood statement:
+
+<div style="font-size:0.8em">
+$$
+Y_i \mid X_i \sim N(\mu_i,\sigma^2), \quad \mu_i = X_i\beta
+$$
+
+- model predicts a mean systolic blood pressure ($\mu_i$) for each covariate
+- standard errors and confidence intervals are derived from the Gaussian sampling distribution of $Y_i$ around  $\mu_i = X_i\beta$ with variance $\sigma^2$
+- determines the sampling distribution of the estimated regression coefficient $\hat{\beta}$
+</div>
+
+---
+
+## Gaussian likelihood for linear regression
+
+<div style="font-size:0.5em">
+
+Each patient's SBP is modeled as a draw from a normal distribution centered around mean $\mu$:
+
+$$
+Y_i \mid X_i \sim N(\mu_i, \sigma^2)
+$$
+
+<div style="max-height:240px; overflow-y:auto;">
+
+```{r, eval=FALSE}
+mu <- 140
+sd <- 10
+x <- seq(mu - 4*sd, mu + 4*sd, length.out = 400)
+
+df_norm <- tibble(
+  x = x,
+  density = dnorm(x, mean = mu, sd = sd)
+)
+
+ggplot(df_norm, aes(x = x, y = density)) +
+  geom_line(linewidth = 1) +
+  geom_vline(xintercept = mu, linetype = "dashed") +
+  labs(
+    x = "Outcome value (e.g., SBP mmHg)",
+    y = "Density",
+    title = "Normal distribution: variability around an expected mean"
+  )
+```
+
+</div>
+
+```{r, echo=FALSE, fig.height=3, fig.width=6}
+library(tibble)
+library(ggplot2)
+
+mu <- 140
+sd <- 10
+x <- seq(mu - 4*sd, mu + 4*sd, length.out = 400)
+
+df_norm <- tibble(
+  x = x,
+  density = dnorm(x, mean = mu, sd = sd)
+)
+
+ggplot(df_norm, aes(x = x, y = density)) +
+  geom_line(linewidth = 1) +
+  geom_vline(xintercept = mu, linetype = "dashed") +
+  labs(
+    x = "Outcome value (e.g., SBP mmHg)",
+    y = "Density",
+    title = "Normal distribution: variability around an expected mean"
+  )
+```
+
+</div>
+
+
+---
+
+## Gaussian likelihood for linear regression
+
+<div style="font-size:0.5em">
+
+Each patient's SBP is modeled as a draw from a normal distribution centered around mean $\mu$:
+
+$$
+Y_i \mid X_i \sim N(\mu_i, \sigma^2)
+$$
+
+
+<div style="max-height:240px; overflow-y:auto;">
+
+
+
+</div>
+
+
+
+**Interpretation:**
+
+- $\mu_i$ is the model's expected SBP for a given age and treatment
+- $\sigma$ controls how widely individual patients vary around that expected mean
+
+</div>
+
+
+---
+
+
+## Simulate systolic blood pressure data
+
+<div style="max-height:240px; overflow-y:auto;">
+
+```{r}
+n <- 160
+beta_0 <- 132
+beta_drug <- -8
+beta_age  <- 0.45
+sigma <- 10
+
+dat_lm <- tibble(
+  age  = round(runif(n, 35, 80)),
+  drug = rbinom(n, 1, 0.5) |> factor(labels = c("Control", "Drug"))
+) |>
+  mutate(
+    sbp = beta_0 +
+      beta_drug * (drug == "Drug") +
+      beta_age * age +
+      rnorm(n, 0, sigma)
+  )
+
+
+```
+</div>
+
+```{r}
+head(dat_lm)
+```
+
+---
+
+## Check features: systolic blood pressure by treatment
+<div style="max-height:40px; overflow-y:auto;">
+```{r, echo=FALSE}
+
+beta_0 <- 132
+beta_drug <- -8
+beta_age  <- 0.45
+sigma <- 10
+
+dat_lm <- dat_lm |>
+  mutate(
+    sbp = beta_0 +
+      beta_drug * (drug == "Drug") +
+      beta_age * age +
+      rnorm(n, 0, sigma)
+  )
+```
+</div>
+
+```{r}
+ggplot(dat_lm, aes(x = drug, y = sbp)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width = 0.12, alpha = 0.6) +
+  labs(x = "Treatment", y = "SBP (mmHg)", title = "SBP by treatment group")
+```
+
+---
+
+## Fit linear regression
+
+```{r}
+fit_lm <- lm(sbp ~ drug + age, data = dat_lm)
+summary(fit_lm)
+```
+
+---
+
+## Linear regression: key results interpretation
+<div style="font-size:0.5em">
+- coefficients section of the model output helps answer the scientific question of interest
+- other output elements are informative and encouraged for independent review
+
+Coefficients table:
+
+- **Estimate**: best estimate of the effect size
+
+  - drugDrug: -8.5
+    - holding age constant, patients receiving Drug have an average SBP that is 8.5 mmHg lower than control patients 
+  - age: 0.43
+    - mean SBP increase per additional year of age
+- **Std. Error**: uncertainty for each estimate** for `age`: mean SBP change per year
+- **Pr(>|t|) (p-value)**: observed effect is unlikely due to random sampling alone
+  - both values are statistically significant
+
+</div>
+
+---
+
+## Linear regression 95% confidence intervals 
+<div style="font-size:0.6em">
+```{r}
+ci_lm <- confint(fit_lm)
+ci_lm
+```
+
+Interpretation:
+
+- CI width reflects uncertainty driven by $\sigma^2$ and sample size
+- Intercept: [125.2 - 140.3]
+  - baseline SBP lies between 125 and 140 mmHg for the reference group
+- drugDrug: [−11.9, −5.1]
+  - true average SBP reduction associated with Drug dose is between 5 and 12 mmHg
+- age: [0.305, 0.562]
+  - each additional year of age is associated with an average SBP increase between 0.3 and ~0.6 mmHg
+</div>
+---
+
+## Logistic regression - Biomedical research question
+
+Do patients experience improvement with drug treatment and is this improvement related to circulating biomarker levels [i.e.:C-reactive protein (CRP)]? [outcome: yes/no]
+
+---
+
+## Logistic regression model statement
+<div style="font-size:0.6em">
+$$
+Y_i \mid X_i \sim \text{Bernoulli}(p_i),
+\quad \text{logit}(p_i) = \eta_i = \beta_0 + \beta_1 \text{Drug}_i + \beta_2 \text{Biomarker}_i
+$$
+
+Key parts:
+
+outcome distribution: Bernoulli
+
+- each subject’s outcome is binary [i.e.: Response = Yes/No]
+- $p_i$ : probability that subject i has outcome = 1
+ 
+link function (logit)/Linear predictor: $logit(p_i)=ηi​$
+
+- connects predictors to the probability of response
+
+
+</div>
+---
+
+## Logistic regression model statement
+<div style="font-size:0.6em">
+$$
+Y_i \mid X_i \sim \text{Bernoulli}(p_i),
+\quad \text{logit}(p_i) = \eta_i = \beta_0 + \beta_1 \text{Drug}_i + \beta_2 \text{Biomarker}_i
+$$
+
+
+Additional note:
+
+- regression does not require the observed outcome itself to be continuous
+- logistic regression targets a continuous probability $p_i∈(0,1)$ even though the observed data are binary
+- observed outcome takes values like 0 and 1
+- however, the regression model is not directly modeling that binary variable as a linear function of predictors
+- logistic regression models the log odds of the outcome is 0 or 1 
+
+</div>
+---
+
+
+## Bernoulli likelihood for logistic regression
+
+<div style="font-size:0.5em">
+
+Each patient's binary response is modeled as a draw from a Bernoulli distribution with probability $p_i$:
+
+$$
+Y_i \mid X_i \sim \text{Bernoulli}(p_i)
+$$
+
+<div style="max-height:240px; overflow-y:auto;">
+
+```{r, eval=FALSE}
+p <- 0.7
+
+df_bern <- tibble(
+  outcome = factor(c("0 (No)", "1 (Yes)"), levels = c("0 (No)", "1 (Yes)")),
+  prob = c(1 - p, p)
+)
+
+ggplot(df_bern, aes(x = outcome, y = prob)) +
+  geom_col() +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(
+    x = "Binary outcome",
+    y = "Probability",
+    title = "Bernoulli distribution: probability of Yes vs No"
+  )
+```
+
+</div>
+
+```{r, echo=FALSE, fig.height=3, fig.width=6}
+library(tibble)
+library(ggplot2)
+
+p <- 0.7
+
+df_bern <- tibble(
+  outcome = factor(c("0 (No)", "1 (Yes)"), levels = c("0 (No)", "1 (Yes)")),
+  prob = c(1 - p, p)
+)
+
+ggplot(df_bern, aes(x = outcome, y = prob)) +
+  geom_col() +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(
+    x = "Binary outcome",
+    y = "Probability",
+    title = "Bernoulli distribution: probability of Yes vs No"
+  )
+```
+
+Interpretation:
+
+- the model predicts $p_i = P(Y_i=1\mid X_i)$
+- covariates change $p_i$ through the logit link: $\text{logit}(p_i)=X_i\beta$
+
+</div>
+
+---
+
+## Likelihood (why it matters)
+
+Bernoulli likelihood:
+
+$$
+P(Y_i \mid p_i) = p_i^{Y_i}(1-p_i)^{1-Y_i},
+\quad p_i=\frac{1}{1+e^{-\eta_i}}
+$$
+
+- The model predicts a **probability**, not a continuous mean outcome
+- The natural biomedical summary is an **odds ratio**
+
+---
+
+## Drug response dataset
+
+<div style="max-height:240px; overflow-y:auto;">
+```{r}
+n <- 220
+
+dat_logit <- tibble(
+  drug = rbinom(n, 1, 0.5),
+  biomarker = rnorm(n, 0, 1)
+)
+
+b0 <- -0.8
+b_drug <- 0.9
+b_bio  <- 1.1
+
+eta <- b0 + b_drug * dat_logit$drug + b_bio * dat_logit$biomarker
+p   <- 1 / (1 + exp(-eta))
+
+dat_logit <- dat_logit |>
+  mutate(
+    drug = factor(drug, labels = c("Control", "Drug")),
+    response = rbinom(n, 1, p) |> factor(labels = c("No", "Yes"))
+  )
+
+```
+</div>
+
+
+```{r, echo=FALSE}
+head(dat_logit)
+```
+
+
+---
+
+
+## Fit logistic regression
+
+```{r}
+fit_logit <- glm(response ~ drug + biomarker, data = dat_logit, family = binomial())
+summary(fit_logit)
+```
+
+---
+
+## Logistic regression output interpretation
+<div style="font-size:0.5em">
+- logistic regression models the log-odds of response
+- every coefficient describes how a predictor shifts the log-odds of the outcome
+- logistic regression is fit on the log-odds scale:
+
+$$
+log(odds)=β_0 +β_1Drug+β_2Biomarker
+$$
+
+**Estimate**
+
+- estimated change in log-odds of response
+
+Example: 
+
+  - drugDrug: 0.4947
+    - drug increases the **log-odds** of response by 0.4947
+    - exp(0.4947) ≈ 1.64
+    - drug treatment increases the odds of response by approximately 64% compared to control
+  - biomarker effect: 1.0048
+    - biomarker increases the **log-odds** of response by 1.0048
+    - exp(1.0048) ≈ 2.73
+    - one-unit increase in biomarker is associated with nearly a 3-fold increase in odds of response, adjusting for treatment
+</div>
+
+
+## Logistic regression output interpretation
+<div style="font-size:0.5em">
+- logistic regression models the log-odds of response
+- every coefficient describes how a predictor shifts the log-odds of the outcome
+- logistic regression is fit on the log-odds scale:
+
+$$
+log(odds)=β_0 +β_1Drug+β_2Biomarker
+$$
+    
+**Std. Error**
+
+- uncertainty of the log-odds estimate
+
+**Pr(>|z|)**
+
+- evidence against the null hypothesis $H_0:β=0$
+- drugDrug: 0.1070 
+  - estimated effect is positive
+  - result not statistically significant
+  - p > 0.05 [traditional threshold for statistical significance]
+- biomearker: 1.34e-08
+  - biomarker level shows a statistically significant association with response (p < 10⁻⁷)
+</div>
+
+## Forest plot: logistic regression odds ratios
+<div style="font-size:0.5em">
+
+- forest plot summarizes effect sizes on an odds-ratio scale
+
+```{r}
+b <- coef(fit_logit)
+se <- sqrt(diag(vcov(fit_logit)))
+
+or_tab <- tibble(
+  term = names(b),
+  OR = exp(b),
+  CI_low = exp(b - 1.96 * se),
+  CI_high = exp(b + 1.96 * se)
+)
+
+or_tab
+
+
+```
+
+</div>
+---
+
+## Forest plot: logistic regression odds ratios
+<div style="font-size:0.5em">
+A forest plot summarizes effect sizes on an odds-ratio scale
+
+- odds ratios [points] with 95% confidence intervals [horizontal lines]
+
+
+```{r, echo=FALSE}
+# Drop the intercept for plotting
+plot_or <- or_tab |> 
+  filter(term != "(Intercept)") |>
+  mutate(term = factor(term, levels = rev(term)))
+```
+
+Interpretation:
+
+- points to the right of 1 increase odds of response [left of 1 decrease odds]
+- drugDrug: CI crosses 1 additional indicator that there's no significant change in odds
+  - wider CI: more uncertainty in that coefficient estimate
+- biomarker: narrow CI indicating increased certainty in response
+</div>
+---
