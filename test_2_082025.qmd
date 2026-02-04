@@ -555,7 +555,37 @@ A forest plot summarizes effect sizes on an odds-ratio scale
 plot_or <- or_tab |> 
   filter(term != "(Intercept)") |>
   mutate(term = factor(term, levels = rev(term)))
+
+library(ggplot2)
+library(dplyr)
+
+# Prepare data for plotting: drop intercept and order terms
+plot_or <- or_tab |> 
+  filter(term != "(Intercept)") |> 
+  mutate(term = factor(term, levels = rev(term)))  # reverse for top-down display
+
+# Create forest plot
+ggplot(plot_or, aes(x = OR, y = term)) +
+  geom_point(size = 3, color = "steelblue") +                     # points for OR
+  geom_errorbarh(aes(xmin = CI_low, xmax = CI_high), height = 0.2, color = "steelblue") +  # CI lines
+  geom_vline(xintercept = 1, linetype = "dashed", color = "red") +  # reference line at OR = 1
+  scale_x_log10() +  # log scale is conventional for ORs
+  labs(
+    x = "Odds Ratio (log scale)",
+    y = "",
+    title = "Forest Plot: Logistic Regression Odds Ratios"
+  ) +
+  theme_minimal(base_size = 12)
+
 ```
+
+</div>
+---
+
+## Forest plot: logistic regression odds ratios
+<div style="font-size:0.5em">
+A forest plot summarizes effect sizes on an odds-ratio scale
+
 
 Interpretation:
 
@@ -565,3 +595,4 @@ Interpretation:
 - biomarker: narrow CI indicating increased certainty in response
 </div>
 ---
+
